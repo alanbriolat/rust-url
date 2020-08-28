@@ -29,16 +29,27 @@ use std::str;
 /// converted to `[("#first", "%try%")]`.
 #[inline]
 pub fn parse(input: &[u8]) -> Parse<'_> {
-    Parse { input }
+    parse_bytes(input).into_parse()
 }
 /// The return type of `parse()`.
 #[derive(Copy, Clone)]
 pub struct Parse<'a> {
+    inner: ParseBytes<'a>,
+}
+
+/// Like `parse()`, but as raw percent-decoded byte slices, instead of UTF-8 decoded strings.
+#[inline]
+pub fn parse_bytes(input: &[u8]) -> ParseBytes<'_> {
+    ParseBytes { input }
+}
+/// The return type of `parse_bytes()`.
+#[derive(Copy, Clone)]
+pub struct ParseBytes<'a> {
     input: &'a [u8],
 }
 
-impl<'a> Iterator for Parse<'a> {
-    type Item = (Cow<'a, str>, Cow<'a, str>);
+impl<'a> Iterator for ParseBytes<'a> {
+    type Item = (Cow<'a, [u8]>, Cow<'a, [u8]>);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -54,17 +65,17 @@ impl<'a> Iterator for Parse<'a> {
             let mut split2 = sequence.splitn(2, |&b| b == b'=');
             let name = split2.next().unwrap();
             let value = split2.next().unwrap_or(&[][..]);
-            return Some((decode(name), decode(value)));
+            return Some((decode_bytes(name), decode_bytes(value)));
         }
     }
 }
 
-fn decode(input: &[u8]) -> Cow<'_, str> {
+fn decode_bytes(input: &[u8]) -> Cow<'_, [u8]> {
     let replaced = replace_plus(input);
-    decode_utf8_lossy(match percent_decode(&replaced).into() {
-        Cow::Owned(vec) => Cow::Owned(vec),
+    match percent_decode(&replaced).into() {
+        Cow::Owned(output) => Cow::Owned(output),
         Cow::Borrowed(_) => replaced,
-    })
+    }
 }
 
 /// Replace b'+' with b' '
@@ -81,6 +92,43 @@ fn replace_plus(input: &[u8]) -> Cow<'_, [u8]> {
             }
             Cow::Owned(replaced)
         }
+    }
+}
+
+impl<'a> ParseBytes<'a> {
+    /// Return a new iterator that yields pairs of `Vec<u8>` instead of pairs of `Cow<[u8]>`.
+    pub fn into_owned(self) -> ParseIntoOwnedBytes<'a> {
+        ParseIntoOwnedBytes { inner: self }
+    }
+
+    /// Return a new iterator that yields pairs of `Cow<str>` instead of pairs of `Cow<[u8]>`.
+    pub fn into_parse(self) -> Parse<'a> {
+        Parse { inner: self }
+    }
+}
+
+/// Like `ParseBytes`, but yields pairs of `Vec<u8>` instead of pairs of `Cow<[u8]>`.
+pub struct ParseIntoOwnedBytes<'a> {
+    inner: ParseBytes<'a>,
+}
+
+impl<'a> Iterator for ParseIntoOwnedBytes<'a> {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+    }
+}
+
+impl<'a> Iterator for Parse<'a> {
+    type Item = (Cow<'a, str>, Cow<'a, str>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|(k, v)| (decode_utf8_lossy(k), decode_utf8_lossy(v)))
     }
 }
 
